@@ -1,0 +1,61 @@
+# https://goreleaser.com
+# Run locally: (from this directory) goreleaser release --snapshot --clean
+version: 2
+
+project_name: v-drawable-to-glb
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: v-drawable-to-glb
+    main: .
+    binary: v-drawable-to-glb
+    ldflags:
+      - -s -w
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}amd64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^chore"
+      - "^ci"
+      - "merge branch"
+
+release:
+  draft: false
+  prerelease: auto

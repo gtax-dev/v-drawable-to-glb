@@ -1,0 +1,7 @@
+# go build -o v-drawable-to-glb
+/v-drawable-to-glb
+
+# goreleaser release --snapshot
+/dist/
+
+.DS_Store
