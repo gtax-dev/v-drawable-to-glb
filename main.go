@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -188,6 +189,84 @@ func run() int {
 
 	fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", out, len(data))
 	return 0
+}
+
+// buildMultipart builds a multipart body from pre-loaded byte slices.
+// Used by integration tests; run() uses postConvertStream instead to avoid buffering.
+func buildMultipart(
+	ext, inputPath string,
+	inputData []byte,
+	ytdPath string,
+	ytdData []byte,
+	name, lod, drawable string,
+	drawableIndex int,
+	rotationXDeg, rotationYDeg, rotationZDeg float64,
+) ([]byte, string, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+
+	fieldName := strings.TrimPrefix(ext, ".")
+	part, err := mw.CreateFormFile(fieldName, filepath.Base(inputPath))
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := part.Write(inputData); err != nil {
+		return nil, "", err
+	}
+	if len(ytdData) > 0 {
+		filename := "textures.ytd"
+		if ytdPath != "" {
+			filename = filepath.Base(ytdPath)
+		}
+		part, err := mw.CreateFormFile("ytd", filename)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(ytdData); err != nil {
+			return nil, "", err
+		}
+	}
+	if strings.TrimSpace(name) != "" {
+		_ = mw.WriteField("name", name)
+	}
+	if strings.TrimSpace(lod) != "" {
+		_ = mw.WriteField("lod", lod)
+	}
+	if ext == ".ydd" {
+		if strings.TrimSpace(drawable) != "" {
+			_ = mw.WriteField("drawable", drawable)
+		}
+		if drawableIndex >= 0 {
+			_ = mw.WriteField("drawableIndex", fmt.Sprintf("%d", drawableIndex))
+		}
+	}
+	if rotationXDeg != 0 {
+		_ = mw.WriteField("rotationX", fmt.Sprintf("%g", rotationXDeg))
+	}
+	if rotationYDeg != 0 {
+		_ = mw.WriteField("rotationY", fmt.Sprintf("%g", rotationYDeg))
+	}
+	if rotationZDeg != 0 {
+		_ = mw.WriteField("rotationZ", fmt.Sprintf("%g", rotationZDeg))
+	}
+	if err := mw.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), mw.FormDataContentType(), nil
+}
+
+// postConvert sends a pre-built multipart body. Used by integration tests.
+func postConvert(resolvedBase, endpoint string, body []byte, contentType, apiKey string, client *http.Client) (*http.Response, error) {
+	urlStr := strings.TrimRight(resolvedBase, "/") + endpoint
+	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	return client.Do(req)
 }
 
 // postConvertStream sends a multipart POST with a streaming body written by writeBody.
