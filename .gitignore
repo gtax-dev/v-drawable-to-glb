@@ -5,3 +5,11 @@
 /dist/
 
 .DS_Store
+
+# stress-convert.sh outputs
+/example/stress-out/
+
+scripts
+
+example/lowr.glb
+example/phone.glb

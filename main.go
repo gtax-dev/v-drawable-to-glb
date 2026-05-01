@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -26,8 +25,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
 	}
-	exitCode := run()
-	os.Exit(exitCode)
+	os.Exit(run())
 }
 
 func run() int {
@@ -76,28 +74,86 @@ func run() int {
 		out = base + ".glb"
 	}
 
-	inputData, err := os.ReadFile(*inputPath)
+	// Open files eagerly so we detect missing files before starting the request.
+	inputFile, err := os.Open(*inputPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: read input: %v\n", err)
 		return 1
 	}
+	defer inputFile.Close()
 
-	var ytdData []byte
-	if strings.TrimSpace(*ytdPath) != "" {
-		ytdData, err = os.ReadFile(*ytdPath)
+	var ytdFile *os.File
+	if p := strings.TrimSpace(*ytdPath); p != "" {
+		ytdFile, err = os.Open(p)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: read ytd: %v\n", err)
 			return 1
 		}
+		defer ytdFile.Close()
 	}
 
-	body, contentType, err := buildMultipart(ext, *inputPath, inputData, *ytdPath, ytdData, *name, *lod, *drawable, *drawableIndex, *rotationXDeg, *rotationYDeg, *rotationZDeg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: build request: %v\n", err)
-		return 1
-	}
-
-	resp, err := postConvert(defaultPublicAPI, endpoint, body, contentType, key, &http.Client{Timeout: *timeout})
+	fieldName := strings.TrimPrefix(ext, ".")
+	resp, err := postConvertStream(
+		defaultPublicAPI, endpoint,
+		func(mw *multipart.Writer) error {
+			part, err := mw.CreateFormFile(fieldName, filepath.Base(*inputPath))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(part, inputFile); err != nil {
+				return fmt.Errorf("read input: %w", err)
+			}
+			if ytdFile != nil {
+				part, err := mw.CreateFormFile("ytd", filepath.Base(*ytdPath))
+				if err != nil {
+					return err
+				}
+				if _, err := io.Copy(part, ytdFile); err != nil {
+					return fmt.Errorf("read ytd: %w", err)
+				}
+			}
+			if strings.TrimSpace(*name) != "" {
+				if err := mw.WriteField("name", *name); err != nil {
+					return err
+				}
+			}
+			if strings.TrimSpace(*lod) != "" {
+				if err := mw.WriteField("lod", *lod); err != nil {
+					return err
+				}
+			}
+			if ext == ".ydd" {
+				if strings.TrimSpace(*drawable) != "" {
+					if err := mw.WriteField("drawable", *drawable); err != nil {
+						return err
+					}
+				}
+				if *drawableIndex >= 0 {
+					if err := mw.WriteField("drawableIndex", fmt.Sprintf("%d", *drawableIndex)); err != nil {
+						return err
+					}
+				}
+			}
+			if *rotationXDeg != 0 {
+				if err := mw.WriteField("rotationX", fmt.Sprintf("%g", *rotationXDeg)); err != nil {
+					return err
+				}
+			}
+			if *rotationYDeg != 0 {
+				if err := mw.WriteField("rotationY", fmt.Sprintf("%g", *rotationYDeg)); err != nil {
+					return err
+				}
+			}
+			if *rotationZDeg != 0 {
+				if err := mw.WriteField("rotationZ", fmt.Sprintf("%g", *rotationZDeg)); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		key,
+		&http.Client{Timeout: *timeout},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: http: %v\n", err)
 		return 1
@@ -134,107 +190,36 @@ func run() int {
 	return 0
 }
 
-// postConvert sends a multipart conversion request. Caller must close resp.Body.
-func postConvert(resolvedBase, endpoint string, body []byte, contentType, apiKey string, client *http.Client) (*http.Response, error) {
+// postConvertStream sends a multipart POST with a streaming body written by writeBody.
+// Files are piped directly from disk — no full-body buffer in RAM.
+func postConvertStream(
+	resolvedBase, endpoint string,
+	writeBody func(mw *multipart.Writer) error,
+	apiKey string,
+	client *http.Client,
+) (*http.Response, error) {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+
+	go func() {
+		err := writeBody(mw)
+		if closeErr := mw.Close(); err == nil {
+			err = closeErr
+		}
+		pw.CloseWithError(err)
+	}()
+
 	urlStr := strings.TrimRight(resolvedBase, "/") + endpoint
-	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, urlStr, pr)
 	if err != nil {
+		_ = pr.CloseWithError(err)
 		return nil, err
 	}
-	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	return client.Do(req)
-}
-
-func buildMultipart(
-	ext, inputPath string,
-	inputData []byte,
-	ytdPath string,
-	ytdData []byte,
-	name, lod, drawable string,
-	drawableIndex int,
-	rotationXDeg, rotationYDeg, rotationZDeg float64,
-) ([]byte, string, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-
-	switch ext {
-	case ".ydr":
-		if err := writeFormFile(w, "ydr", filepath.Base(inputPath), inputData); err != nil {
-			return nil, "", err
-		}
-	case ".ydd":
-		if err := writeFormFile(w, "ydd", filepath.Base(inputPath), inputData); err != nil {
-			return nil, "", err
-		}
-	default:
-		return nil, "", fmt.Errorf("unsupported extension %q", ext)
-	}
-
-	if len(ytdData) > 0 {
-		filename := "textures.ytd"
-		if strings.TrimSpace(ytdPath) != "" {
-			filename = filepath.Base(ytdPath)
-		}
-		if err := writeFormFile(w, "ytd", filename, ytdData); err != nil {
-			return nil, "", err
-		}
-	}
-
-	if strings.TrimSpace(name) != "" {
-		if err := w.WriteField("name", name); err != nil {
-			return nil, "", err
-		}
-	}
-	if strings.TrimSpace(lod) != "" {
-		if err := w.WriteField("lod", lod); err != nil {
-			return nil, "", err
-		}
-	}
-	if ext == ".ydd" {
-		if strings.TrimSpace(drawable) != "" {
-			if err := w.WriteField("drawable", drawable); err != nil {
-				return nil, "", err
-			}
-		}
-		if drawableIndex >= 0 {
-			if err := w.WriteField("drawableIndex", fmt.Sprintf("%d", drawableIndex)); err != nil {
-				return nil, "", err
-			}
-		}
-	}
-
-	if rotationXDeg != 0 {
-		if err := w.WriteField("rotationX", fmt.Sprintf("%g", rotationXDeg)); err != nil {
-			return nil, "", err
-		}
-	}
-	if rotationYDeg != 0 {
-		if err := w.WriteField("rotationY", fmt.Sprintf("%g", rotationYDeg)); err != nil {
-			return nil, "", err
-		}
-	}
-	if rotationZDeg != 0 {
-		if err := w.WriteField("rotationZ", fmt.Sprintf("%g", rotationZDeg)); err != nil {
-			return nil, "", err
-		}
-	}
-
-	if err := w.Close(); err != nil {
-		return nil, "", err
-	}
-	return buf.Bytes(), w.FormDataContentType(), nil
-}
-
-func writeFormFile(w *multipart.Writer, fieldName, filename string, data []byte) error {
-	part, err := w.CreateFormFile(fieldName, filename)
-	if err != nil {
-		return err
-	}
-	_, err = part.Write(data)
-	return err
 }
 
 type apiError struct {
