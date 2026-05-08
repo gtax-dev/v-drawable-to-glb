@@ -1,14 +1,16 @@
 # v-drawable-to-glb (CLI)
 
-Small Go CLI that uploads a GTA V `.ydr` or `.ydd` plus optional `.ytd` to a **drawable → GLB** HTTP API and saves the returned `.glb`.
-
-No third-party Go modules; uses only the standard library.
+Go CLI that uploads a GTA V `.ydr` or `.ydd` plus optional `.ytd` to a **drawable → GLB** HTTP API and saves the returned `.glb`.
 
 ## Limits and API keys
 
-Without an API key, usage is typically capped at **15 conversion attempts per client IP address per rolling 24-hour window**. Passing an API key raises that quota.
+| Tier | Daily limit |
+|------|-------------|
+| No key (per IP) | 3 conversions per 24 h |
+| API key, basic | 1,500 conversions per 24 h |
+| API key, Pro | 3,000 conversions per 24 h |
 
-You can create a free API key and use Bearer authentication as documented at **[gtax.dev/api-keys](https://gtax.dev/api-keys)**.
+You can create a free API key at **[gtax.dev/api-keys](https://gtax.dev/api-keys)**.
 
 Set the key with `-api-key` or the environment variable `V_DRAWABLE_TO_GLB_API_KEY`.
 
