@@ -21,8 +21,8 @@ const (
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s -i <file.ydr|file.ydd> [options]\n\n", os.Args[0])
-		fmt.Fprintln(os.Stderr, "Convert a GTA V drawable (.ydr/.ydd) to GLB via HTTP multipart POST.")
+		fmt.Fprintf(os.Stderr, "Usage: %s -i <file.ydr|file.ydd|file.yft> [options]\n\n", os.Args[0])
+		fmt.Fprintln(os.Stderr, "Convert a GTA V drawable (.ydr/.ydd) or vehicle fragment (.yft) to GLB via HTTP multipart POST.")
 		fmt.Fprintln(os.Stderr, "Options:")
 		flag.PrintDefaults()
 	}
@@ -31,13 +31,17 @@ func main() {
 
 func run() int {
 	var (
-		inputPath     = flag.String("i", "", "input `.ydr` or `.ydd` file (required)")
+		inputPath     = flag.String("i", "", "input `.ydr`, `.ydd`, or `.yft` file (required)")
 		outputPath    = flag.String("o", "", "output `.glb` path (default: input basename with .glb)")
 		ytdPath       = flag.String("ytd", "", "optional `.ytd` texture dictionary")
 		name          = flag.String("name", "", "optional output filename stem for the API")
 		lod           = flag.String("lod", "", "optional LOD: high, medium, low, verylow")
 		drawable      = flag.String("drawable", "", "optional YDD drawable name selector")
 		drawableIndex = flag.Int("drawable-index", -1, "optional zero-based YDD drawable index (-1 = omit)")
+		livery        = flag.String("livery", "", "optional YFT livery texture name or numeric slot index")
+		paint         = flag.String("paint", "", "optional YFT paint tint (#rrggbb, #rgb, rgb(r,g,b), r,g,b, or a named color)")
+		watermark     = flag.String("watermark", "", "optional watermark text stamped onto overlay geometry on the model sides (.ydr/.ydd/.yft)")
+		skin          = flag.Bool("skin", false, "optional YFT: bake the bind-pose skeleton transform into the mesh")
 		rotationXDeg  = flag.Float64("rotation-x", 0, "optional degrees about world +X (root node; order X, then Y, then Z)")
 		rotationYDeg  = flag.Float64("rotation-y", 0, "optional degrees about world +Y")
 		rotationZDeg  = flag.Float64("rotation-z", 0, "optional degrees about world +Z")
@@ -59,8 +63,10 @@ func run() int {
 		endpoint = "/convert/ydr-to-glb"
 	case ".ydd":
 		endpoint = "/convert/ydd-to-glb"
+	case ".yft":
+		endpoint = "/convert/yft-to-glb"
 	default:
-		fmt.Fprintf(os.Stderr, "error: input must be .ydr or .ydd, got %q\n", ext)
+		fmt.Fprintf(os.Stderr, "error: input must be .ydr, .ydd, or .yft, got %q\n", ext)
 		return 2
 	}
 
@@ -123,6 +129,11 @@ func run() int {
 					return err
 				}
 			}
+			if strings.TrimSpace(*watermark) != "" {
+				if err := mw.WriteField("watermark", *watermark); err != nil {
+					return err
+				}
+			}
 			if ext == ".ydd" {
 				if strings.TrimSpace(*drawable) != "" {
 					if err := mw.WriteField("drawable", *drawable); err != nil {
@@ -131,6 +142,23 @@ func run() int {
 				}
 				if *drawableIndex >= 0 {
 					if err := mw.WriteField("drawableIndex", fmt.Sprintf("%d", *drawableIndex)); err != nil {
+						return err
+					}
+				}
+			}
+			if ext == ".yft" {
+				if strings.TrimSpace(*livery) != "" {
+					if err := mw.WriteField("livery", *livery); err != nil {
+						return err
+					}
+				}
+				if strings.TrimSpace(*paint) != "" {
+					if err := mw.WriteField("paint", *paint); err != nil {
+						return err
+					}
+				}
+				if *skin {
+					if err := mw.WriteField("skin", "true"); err != nil {
 						return err
 					}
 				}
@@ -201,6 +229,8 @@ func buildMultipart(
 	name, lod, drawable string,
 	drawableIndex int,
 	rotationXDeg, rotationYDeg, rotationZDeg float64,
+	livery, paint, watermark string,
+	skin bool,
 ) ([]byte, string, error) {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -232,12 +262,26 @@ func buildMultipart(
 	if strings.TrimSpace(lod) != "" {
 		_ = mw.WriteField("lod", lod)
 	}
+	if strings.TrimSpace(watermark) != "" {
+		_ = mw.WriteField("watermark", watermark)
+	}
 	if ext == ".ydd" {
 		if strings.TrimSpace(drawable) != "" {
 			_ = mw.WriteField("drawable", drawable)
 		}
 		if drawableIndex >= 0 {
 			_ = mw.WriteField("drawableIndex", fmt.Sprintf("%d", drawableIndex))
+		}
+	}
+	if ext == ".yft" {
+		if strings.TrimSpace(livery) != "" {
+			_ = mw.WriteField("livery", livery)
+		}
+		if strings.TrimSpace(paint) != "" {
+			_ = mw.WriteField("paint", paint)
+		}
+		if skin {
+			_ = mw.WriteField("skin", "true")
 		}
 	}
 	if rotationXDeg != 0 {
